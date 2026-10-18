@@ -78,3 +78,17 @@ make check-config  # MSVC-built Windows INI checks under Wine
 ```
 
 Wine checks use an isolated prefix in `build/wine-smoke`. Build outputs and private analysis files are excluded from Git.
+
+## Development
+
+Almost entirely AI-generated, with human direction and in-game testing.
+
+## License
+
+Copyright (c) 2026 BlipLimitFix contributors.
+
+Licensed under the [GNU GPL version 3 only](LICENSE), with this additional permission under section 7:
+
+> You may link or combine this program with ScriptHookV and its SDK and convey the resulting work. This permission does not remove GPL requirements for this program or other covered code, and does not grant rights to third-party components beyond their own licenses.
+
+ScriptHookV and its SDK are third-party dependencies and are not bundled.
