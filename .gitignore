@@ -1,0 +1,6 @@
+/analysis/
+/collectibles-on-map/
+/build/
+/dist/
+/.vs/
+*.vcxproj.user

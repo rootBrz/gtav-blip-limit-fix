@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="ConfigTest|x64">
+      <Configuration>ConfigTest</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{22DCC08D-450F-4A30-ACB1-2B148FDE7D81}</ProjectGuid>
+    <Keyword>Win32Proj</Keyword>
+    <RootNamespace>BlipLimitFix</RootNamespace>
+    <ProjectName>BlipLimitFix</ProjectName>
+    <Configuration Condition="'$(Configuration)'==''">Release</Configuration>
+    <Platform Condition="'$(Platform)'==''">x64</Platform>
+    <ScriptHookSdkDir Condition="'$(ScriptHookSdkDir)'==''">$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '..', 'ScriptHookV_SDK_1.0.617.1a'))</ScriptHookSdkDir>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType Condition="'$(Configuration)'=='Release'">DynamicLibrary</ConfigurationType>
+    <ConfigurationType Condition="'$(Configuration)'=='ConfigTest'">Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <LinkIncremental>false</LinkIncremental>
+    <OutDir Condition="'$(Configuration)'=='Release'">$(ProjectDir)dist\</OutDir>
+    <OutDir Condition="'$(Configuration)'=='ConfigTest'">$(ProjectDir)build\</OutDir>
+    <IntDir>$(ProjectDir)build\msbuild\$(Configuration)\</IntDir>
+    <TargetName Condition="'$(Configuration)'=='Release'">BlipLimitFix</TargetName>
+    <TargetName Condition="'$(Configuration)'=='ConfigTest'">config_test</TargetName>
+    <TargetExt Condition="'$(Configuration)'=='Release'">.asi</TargetExt>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <AdditionalIncludeDirectories>$(ProjectDir)src;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
+      <Optimization>MaxSpeed</Optimization>
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <PreprocessorDefinitions>WIN32;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <AdditionalIncludeDirectories>$(ScriptHookSdkDir)inc;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <TreatAngleIncludeAsExternal>true</TreatAngleIncludeAsExternal>
+      <ExternalWarningLevel>TurnOffAllWarnings</ExternalWarningLevel>
+      <PreprocessorDefinitions>NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <AdditionalLibraryDirectories>$(ScriptHookSdkDir)lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>ScriptHookV.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='ConfigTest'">
+    <Link>
+      <SubSystem>Console</SubSystem>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClCompile Include="src\config.cpp" />
+    <ClCompile Include="src\blip_limit_fix.cpp" Condition="'$(Configuration)'=='Release'" />
+    <ClCompile Include="tests\config_test.cpp" Condition="'$(Configuration)'=='ConfigTest'" />
+    <ClInclude Include="src\config.hpp" />
+    <ClInclude Include="src\patch.hpp" />
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="CheckScriptHookSdk" BeforeTargets="PrepareForBuild" Condition="'$(Configuration)'=='Release'">
+    <Error Condition="!Exists('$(ScriptHookSdkDir)inc\main.h') Or !Exists('$(ScriptHookSdkDir)lib\ScriptHookV.lib')" Text="Set ScriptHookSdkDir to a ScriptHookV SDK containing inc\main.h and lib\ScriptHookV.lib." />
+  </Target>
+  <Target Name="CopyConfiguration" AfterTargets="Build" Condition="'$(Configuration)'=='Release'">
+    <Copy SourceFiles="$(ProjectDir)config\BlipLimitFix.ini" DestinationFolder="$(OutDir)" SkipUnchangedFiles="true" />
+  </Target>
+</Project>
