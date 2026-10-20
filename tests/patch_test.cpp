@@ -187,6 +187,8 @@ int main(int argc, char** argv) {
     testLimits();
     testMatcher(blip::kGuard);
     testMatcher(blip::kProgramLocator);
+    testMatcher(blip::kProgramLocatorScrDbg);
+    testMatcher(blip::kProgramLocatorLegacy);
     testGuardBranches();
     testPagedMatcher();
     if (argc >= 2) scanFile(argv[1], blip::kProgramLocator);

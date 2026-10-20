@@ -7,9 +7,7 @@
 #include "patch.hpp"
 #include "memory.hpp"
 #include "script.hpp"
-#include <array>
 #include <cstdint>
-#include <cstring>
 
 namespace {
 
@@ -43,10 +41,13 @@ void patternFailure(const wchar_t* detail) {
 void run() {
     if (!initialize()) return;
     const auto moduleBase = GetModuleHandleW(nullptr);
-    const auto scan = blip::memory::findImagePattern(
-        moduleBase, blip::kProgramLocator.data(), blip::kProgramLocator.size());
-    log("Native scan: readable=%zu skipped=%zu ranges=%zu",
-        scan.scannedBytes, scan.skippedBytes, scan.readableRanges);
+    const auto scan = blip::findProgramArray(moduleBase);
+    for (const auto* locator : {&scan.original, &scan.scrDbg, &scan.legacy})
+        log("Native scan: locator=%s status=%u readable=%zu skipped=%zu ranges=%zu",
+            locator == &scan.original ? "original-enhanced" :
+                locator == &scan.scrDbg ? "scrDbg-enhanced" : "scrDbg-legacy",
+            static_cast<unsigned>(locator->status),
+            locator->scannedBytes, locator->skippedBytes, locator->readableRanges);
     if (scan.status == blip::memory::ScanStatus::Missing) {
         log("REFUSED: program-array locator not found");
         patternFailure(L"The game-code pattern was not found. BlipLimitFix has stopped without patching. See BlipLimitFix.log.");
@@ -58,33 +59,10 @@ void run() {
         return;
     }
     if (scan.status != blip::memory::ScanStatus::Found) {
-        log("REFUSED: invalid game image or memory changed during native scan");
+        log("REFUSED: invalid image, changed locator, out-of-range array, scan fault, or locator disagreement");
         return;
     }
-    std::array<std::uint8_t, blip::kProgramLocator.size()> locator;
-    if (!blip::memory::read(scan.match, locator.data(), locator.size())) {
-        log("REFUSED: native locator became unreadable");
-        return;
-    }
-    for (std::size_t i = 0; i < locator.size(); ++i) {
-        if (blip::kProgramLocator[i] >= 0 && locator[i] != blip::kProgramLocator[i]) {
-            log("REFUSED: native locator changed after scanning");
-            return;
-        }
-    }
-    std::int32_t displacement;
-    std::memcpy(&displacement, locator.data() + 3, sizeof(displacement));
-    const auto base = reinterpret_cast<std::uintptr_t>(moduleBase);
-    const auto match = reinterpret_cast<std::uintptr_t>(scan.match);
-    const auto arrayOffset = static_cast<std::int64_t>(match - base) + 7 + displacement + 0xd8;
-    constexpr auto arrayBytes = blip::kProgramSlots * sizeof(blip::ScriptProgram*);
-    if (arrayOffset < 0xd8 || static_cast<std::uint64_t>(arrayOffset) > scan.imageSize ||
-        arrayBytes > scan.imageSize - static_cast<std::size_t>(arrayOffset)) {
-        log("REFUSED: program array is outside the game image");
-        return;
-    }
-    const auto programs = reinterpret_cast<const blip::ScriptProgram* const*>(
-        base + static_cast<std::size_t>(arrayOffset));
+    const auto programs = scan.programs;
     log("Located program array dynamically; waiting for blip_controller");
     bool applied = false;
     unsigned transientFailures = 0;
@@ -148,7 +126,7 @@ bool initialize() {
     if (logFile != INVALID_HANDLE_VALUE) CloseHandle(logFile);
     logFile = CreateFileW(path, GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    log("Compatibility: tested only on GTA V Enhanced 1.0.1158.16; other versions are untested");
+    log("Compatibility: game-tested only on GTA V Enhanced 1.0.1158.16; Legacy discovery has synthetic tests only; Legacy limits/capacity and other builds are unverified");
     std::wcscpy(slash+1, L"BlipLimitFix.ini");
     const auto config = blip::readLimit(path, limit);
     if (config == blip::ConfigResult::Invalid) {

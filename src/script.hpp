@@ -1,5 +1,6 @@
 #pragma once
 
+#include "memory.hpp"
 #include <cstddef>
 #include <cstdint>
 
@@ -50,6 +51,17 @@ constexpr bool continueScriptPolling(ScriptResult result, unsigned& failures) {
         return false;
     }
 }
+
+struct ProgramArrayScan {
+    memory::ScanStatus status = memory::ScanStatus::Missing;
+    memory::ImageScan original;
+    memory::ImageScan scrDbg;
+    memory::ImageScan legacy;
+    const ScriptProgram* const* programs = nullptr;
+};
+
+// Each locator must be unique; all present matches must resolve to the same array.
+ProgramArrayScan findProgramArray(HMODULE module);
 
 // Reads fresh program/page snapshots each call; no cached pointer survives a yield.
 ScriptResult patchController(const ScriptProgram* const* programs,

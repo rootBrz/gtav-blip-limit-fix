@@ -233,6 +233,28 @@ void testRetryExhaustion() {
 }
 } // namespace
 
+void testLocatedScript(const blip::ScriptProgram* const* programs) {
+    Script script;
+    script.loop(100);
+    std::array<std::uint8_t, 2 * blip::kPageSize> expected;
+    for (std::size_t i = 0; i < expected.size(); ++i) expected[i] = script.byte(i);
+    const auto replacement = blip::encodeLimit(1900);
+    std::memcpy(expected.data() + 104, replacement.data(), replacement.size());
+    auto* slot = const_cast<const blip::ScriptProgram**>(programs);
+    slot[0] = &script.program;
+    std::size_t offset = 0;
+    script.program.natives = nullptr;
+    assert(blip::patchController(programs, 1900, offset) == blip::ScriptResult::Transient);
+    assert(offset == 0);
+    script.original(100);
+    script.program.natives = script.natives.data();
+    assert(blip::patchController(programs, 1900, offset) == blip::ScriptResult::Patched);
+    assert(offset == 104);
+    for (std::size_t i = 0; i < expected.size(); ++i) assert(script.byte(i) == expected[i]);
+    assert(blip::patchController(programs, 1900, offset) == blip::ScriptResult::Unchanged);
+    slot[0] = nullptr;
+}
+
 void testScripts() {
     testPatchAndReload();
     testWritePreflight();

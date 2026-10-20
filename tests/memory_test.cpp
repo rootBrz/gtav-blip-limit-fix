@@ -1,5 +1,6 @@
 #include "memory.hpp"
 #include "patch.hpp"
+#include "script.hpp"
 
 #include <array>
 #include <cassert>
@@ -14,6 +15,8 @@
 #endif
 
 static_assert(sizeof(void*) == 8, "These tests exercise loaded x64 PE images.");
+
+void testLocatedScript(const blip::ScriptProgram* const* programs);
 
 namespace {
 
@@ -398,11 +401,159 @@ void testAccessibleAndRead() {
     assert(!blip::memory::read(source, copied.data(), copied.size()));
 }
 
+template<std::size_t N>
+void placeLocator(Image& image, std::size_t offset, const std::array<int, N>& pattern,
+                  std::int64_t arrayOffset) {
+    image.place(offset, pattern);
+    const auto delta = arrayOffset - 0xd8 - static_cast<std::int64_t>(offset) - 7;
+    assert(delta >= (std::numeric_limits<std::int32_t>::min)() &&
+           delta <= (std::numeric_limits<std::int32_t>::max)());
+    const auto displacement = static_cast<std::int32_t>(delta);
+    std::memcpy(image.base + offset + 3, &displacement, sizeof(displacement));
+}
+
+void testProgramLocators() {
+    for (unsigned test = 0; test < 13; ++test) {
+        Image image;
+        const auto original = 4 * image.page + 32;
+        const auto alternative = original + 128;
+        const auto array = 2 * image.page; // Negative RIP displacement, full array within the image.
+        if (test != 0 && test != 2 && test != 7)
+            placeLocator(image, original, blip::kProgramLocator, array);
+        if (test != 0 && test != 1 && test != 8)
+            placeLocator(image, alternative, blip::kProgramLocatorScrDbg,
+                         test == 4 ? array + 8 : array);
+        if (test == 5 || test == 8)
+            placeLocator(image, original + 256, blip::kProgramLocator, array);
+        if (test == 6 || test == 7)
+            placeLocator(image, alternative + 256, blip::kProgramLocatorScrDbg, array);
+        if (test == 9)
+            placeLocator(image, original, blip::kProgramLocator, -1);
+        if (test == 10) image.nt().Signature = 0;
+        if (test == 11)
+            placeLocator(image, alternative, blip::kProgramLocatorScrDbg, image.size - 8);
+        if (test == 12)
+            placeLocator(image, alternative, blip::kProgramLocatorScrDbg, 0xd7);
+        const auto result = blip::findProgramArray(reinterpret_cast<HMODULE>(image.base));
+        const auto expected = test == 0 ? ScanStatus::Missing :
+            test <= 3 ? ScanStatus::Found :
+            test >= 5 && test <= 8 ? ScanStatus::Ambiguous : ScanStatus::Invalid;
+        assert(result.status == expected);
+        if (expected == ScanStatus::Found) {
+            assert(reinterpret_cast<const std::uint8_t*>(result.programs) == image.base + array);
+            std::size_t offset = 0;
+            assert(blip::patchController(result.programs, blip::kDefaultLimit, offset) ==
+                   blip::ScriptResult::Waiting);
+            testLocatedScript(result.programs);
+            image.protect(array, image.page, PAGE_NOACCESS);
+            assert(blip::patchController(result.programs, blip::kDefaultLimit, offset) ==
+                   blip::ScriptResult::Transient);
+        } else {
+            assert(result.programs == nullptr);
+        }
+    }
+    std::puts("program locators: missing, original-only, scrDbg-only, agreement, conflict, ambiguity, invalid RIP/image, array reads passed");
+}
+
+void testLegacyLocators() {
+    // Exercise Legacy alone and every Enhanced/Legacy combination through production discovery.
+    for (unsigned mask = 4; mask < 8; ++mask) {
+        for (unsigned test = 0; test < 12; ++test) {
+            const auto selected = test >= 1 && test <= 6 ? (test - 1) % 3 : 2;
+            if (test >= 1 && test <= 6 && !(mask & (1u << selected))) continue;
+            if (test >= 4 && test <= 6 && mask == 4) continue; // No second locator to disagree.
+            Image image;
+            const auto array = 2 * image.page;
+            auto place = [&](unsigned locator, std::size_t extra, std::int64_t target) {
+                const auto at = 4 * image.page + 32 + 128 * locator + extra;
+                switch (locator) {
+                case 0: placeLocator(image, at, blip::kProgramLocator, target); break;
+                case 1: placeLocator(image, at, blip::kProgramLocatorScrDbg, target); break;
+                case 2: placeLocator(image, at, blip::kProgramLocatorLegacy, target); break;
+                }
+            };
+            for (unsigned locator = 0; locator < 3; ++locator)
+                if (mask & (1u << locator)) place(locator, 0, array);
+            if (test >= 1 && test <= 3) place(selected, 512, array);
+            if (test >= 4 && test <= 6) place(selected, 0, array + 8);
+            if (test == 7) place(2, 0, -1);
+            if (test == 8) place(2, 0, 0xd7);
+            if (test == 9) place(2, 0, image.size - 8);
+            if (test == 10) place(2, 0, (std::numeric_limits<std::int32_t>::max)());
+            if (test == 11) image.nt().Signature = 0;
+            const auto result = blip::findProgramArray(reinterpret_cast<HMODULE>(image.base));
+            const auto expected = test == 0 ? ScanStatus::Found :
+                test <= 3 ? ScanStatus::Ambiguous : ScanStatus::Invalid;
+            assert(result.status == expected);
+            if (test == 0) {
+                assert(result.original.status == (mask & 1 ? ScanStatus::Found : ScanStatus::Missing));
+                assert(result.scrDbg.status == (mask & 2 ? ScanStatus::Found : ScanStatus::Missing));
+                assert(result.legacy.status == ScanStatus::Found);
+                assert(reinterpret_cast<const std::uint8_t*>(result.programs) == image.base + array);
+                testLocatedScript(result.programs);
+                image.protect(array, image.page, PAGE_NOACCESS);
+                std::size_t offset = 123;
+                assert(blip::patchController(result.programs, 1900, offset) == blip::ScriptResult::Transient);
+                assert(offset == 123);
+            } else {
+                assert(result.programs == nullptr);
+            }
+        }
+    }
+    std::puts("Legacy locators: Legacy-only, all Enhanced agreements/conflicts, ambiguity without fallback, signed RIP/image rejection and script pipeline passed");
+}
+
+void testCapturedImage(const char* path) {
+    // A captured loaded image already stores sections at their RVAs. Never execute it.
+    auto* file = std::fopen(path, "rb");
+    assert(file);
+    assert(std::fseek(file, 0, SEEK_END) == 0);
+    const auto length = std::ftell(file);
+    assert(length >= static_cast<long>(sizeof(IMAGE_DOS_HEADER)));
+    assert(std::fseek(file, 0, SEEK_SET) == 0);
+    auto* base = static_cast<std::uint8_t*>(VirtualAlloc(
+        nullptr, static_cast<std::size_t>(length), MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+    assert(base);
+    assert(std::fread(base, 1, static_cast<std::size_t>(length), file) == static_cast<std::size_t>(length));
+    assert(std::fclose(file) == 0);
+    const auto module = reinterpret_cast<HMODULE>(base);
+    auto result = blip::findProgramArray(module);
+    assert(result.status == ScanStatus::Found);
+    assert(result.original.status == ScanStatus::Found && result.scrDbg.status == ScanStatus::Found);
+    assert(result.legacy.status == ScanStatus::Missing); // No spurious Legacy match in the real Enhanced image.
+    assert(result.original.match - base == 0x91c048);
+    assert(result.scrDbg.match - base == 0x91bc09);
+    assert(reinterpret_cast<const std::uint8_t*>(result.programs) - base == 0x3ed1000);
+    std::array<const blip::ScriptProgram*, blip::kProgramSlots> slots;
+    assert(blip::memory::read(result.programs, slots.data(), sizeof(slots)));
+    const auto* programs = result.programs;
+    const auto original = static_cast<std::size_t>(result.original.match - base);
+    const auto alternative = static_cast<std::size_t>(result.scrDbg.match - base);
+    const auto originalByte = base[original];
+    const auto alternativeByte = base[alternative];
+    base[original] = 0;
+    result = blip::findProgramArray(module);
+    assert(result.status == ScanStatus::Found && result.programs == programs);
+    assert(result.original.status == ScanStatus::Missing && result.scrDbg.status == ScanStatus::Found);
+    base[original] = originalByte;
+    base[alternative] = 0;
+    result = blip::findProgramArray(module);
+    assert(result.status == ScanStatus::Found && result.programs == programs);
+    assert(result.original.status == ScanStatus::Found && result.scrDbg.status == ScanStatus::Missing);
+    base[original] = 0;
+    result = blip::findProgramArray(module);
+    assert(result.status == ScanStatus::Missing && result.programs == nullptr);
+    base[original] = originalByte;
+    base[alternative] = alternativeByte;
+    assert(VirtualFree(base, 0, MEM_RELEASE));
+    std::puts("captured PE: original RVA 0x91C048, scrDbg RVA 0x91BC09, registry RVA 0x3ED0F28, array RVA 0x3ED1000; agreement and both fallback directions passed");
+}
+
 } // namespace
 
 void testScripts();
 
-int main() {
+int main(int argc, char** argv) {
     testSplitReadableSection();
     testHolesAndGuards();
     testUniquenessAndSections();
@@ -410,6 +561,9 @@ int main() {
     testMalformedHeaders();
     testMalformedSections();
     testAccessibleAndRead();
+    testProgramLocators();
+    testLegacyLocators();
+    if (argc == 2) testCapturedImage(argv[1]);
     testScripts();
     std::puts("memory tests passed");
 }

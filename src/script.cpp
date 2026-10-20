@@ -89,7 +89,59 @@ ScriptResult writeGuard(const Pages& pages, std::size_t loopOffset, const Loop& 
         return ScriptResult::WriteFailed;
     }
 }
+template<std::size_t N>
+bool resolveProgramArray(HMODULE module, const memory::ImageScan& scan,
+                         const std::array<int, N>& pattern,
+                         const ScriptProgram* const*& programs) {
+    std::array<std::uint8_t, N> locator;
+    if (!memory::read(scan.match, locator.data(), locator.size())) return false;
+    for (std::size_t i = 0; i < N; ++i)
+        if (pattern[i] >= 0 && locator[i] != pattern[i]) return false;
+    std::int32_t displacement;
+    std::memcpy(&displacement, locator.data() + 3, sizeof(displacement));
+    const auto base = reinterpret_cast<std::uintptr_t>(module);
+    const auto match = reinterpret_cast<std::uintptr_t>(scan.match);
+    if (match < base || match - base > scan.imageSize) return false;
+    const auto offset = static_cast<std::int64_t>(match - base) + 7 + displacement + 0xd8;
+    constexpr auto bytes = kProgramSlots * sizeof(ScriptProgram*);
+    if (offset < 0xd8 || static_cast<std::uint64_t>(offset) > scan.imageSize ||
+        bytes > scan.imageSize - static_cast<std::size_t>(offset)) return false;
+    programs = reinterpret_cast<const ScriptProgram* const*>(base + static_cast<std::size_t>(offset));
+    return true;
+}
 } // namespace
+
+ProgramArrayScan findProgramArray(HMODULE module) {
+    ProgramArrayScan result;
+    result.original = memory::findImagePattern(module, kProgramLocator.data(), kProgramLocator.size());
+    result.scrDbg = memory::findImagePattern(module, kProgramLocatorScrDbg.data(), kProgramLocatorScrDbg.size());
+    result.legacy = memory::findImagePattern(module, kProgramLocatorLegacy.data(), kProgramLocatorLegacy.size());
+    // Missing alone permits fallback. Never hide ambiguity, invalid images, or scan faults.
+    for (const auto* scan : {&result.original, &result.scrDbg, &result.legacy}) {
+        if (scan->status != memory::ScanStatus::Missing && scan->status != memory::ScanStatus::Found) {
+            result.status = scan->status;
+            return result;
+        }
+    }
+    const ScriptProgram* const* original = nullptr;
+    const ScriptProgram* const* scrDbg = nullptr;
+    const ScriptProgram* const* legacy = nullptr;
+    if ((result.original.status == memory::ScanStatus::Found &&
+         !resolveProgramArray(module, result.original, kProgramLocator, original)) ||
+        (result.scrDbg.status == memory::ScanStatus::Found &&
+         !resolveProgramArray(module, result.scrDbg, kProgramLocatorScrDbg, scrDbg)) ||
+        (result.legacy.status == memory::ScanStatus::Found &&
+         !resolveProgramArray(module, result.legacy, kProgramLocatorLegacy, legacy)) ||
+        (original && scrDbg && original != scrDbg) ||
+        (original && legacy && original != legacy) ||
+        (scrDbg && legacy && scrDbg != legacy)) {
+        result.status = memory::ScanStatus::Invalid;
+        return result;
+    }
+    result.programs = original ? original : scrDbg ? scrDbg : legacy;
+    result.status = result.programs ? memory::ScanStatus::Found : memory::ScanStatus::Missing;
+    return result;
+}
 
 ScriptResult patchController(const ScriptProgram* const* programs,
                              std::uint16_t limit, std::size_t& guardOffset) {

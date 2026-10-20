@@ -24,6 +24,15 @@ inline constexpr std::array<int, 25> kProgramLocator = {
     0x0f, 0xb6, 0x4c, 0x02, 0x01, 0x48, 0x85, 0xc9, 0x74, -1,
     0x48, 0x39, 0xb4, 0xc8, 0xd8, 0x00, 0x00, 0x00
 };
+// scrDbg Enhanced, GTA5.cpp, commit 2700d377e0d0b6452740eefbc5c098ba2bd38d0f.
+inline constexpr std::array<int, 10> kProgramLocatorScrDbg = {
+    0x44, 0x88, 0x05, -1, -1, -1, -1, 0x48, 0x89, 0xf9
+};
+// scrDbg Legacy (GEN8), same pinned GTA5.cpp; the program array is registry + 0xD8.
+inline constexpr std::array<int, 17> kProgramLocatorLegacy = {
+    0x48, 0x8d, 0x0d, -1, -1, -1, -1, 0x41, 0x8b, 0xd6,
+    0xe8, -1, -1, -1, -1, 0xff, 0x05
+};
 
 // PUSH_CONST_S16 limit; IGE leaves one boolean for the unchanged JZ.
 constexpr std::array<std::uint8_t, 4> encodeLimit(std::uint16_t limit) {
