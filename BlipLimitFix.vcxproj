@@ -9,6 +9,10 @@
       <Configuration>ConfigTest</Configuration>
       <Platform>x64</Platform>
     </ProjectConfiguration>
+    <ProjectConfiguration Include="MemoryTest|x64">
+      <Configuration>MemoryTest</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <ProjectGuid>{22DCC08D-450F-4A30-ACB1-2B148FDE7D81}</ProjectGuid>
@@ -23,6 +27,7 @@
   <PropertyGroup Label="Configuration">
     <ConfigurationType Condition="'$(Configuration)'=='Release'">DynamicLibrary</ConfigurationType>
     <ConfigurationType Condition="'$(Configuration)'=='ConfigTest'">Application</ConfigurationType>
+    <ConfigurationType Condition="'$(Configuration)'=='MemoryTest'">Application</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
@@ -32,9 +37,11 @@
     <LinkIncremental>false</LinkIncremental>
     <OutDir Condition="'$(Configuration)'=='Release'">$(ProjectDir)dist\</OutDir>
     <OutDir Condition="'$(Configuration)'=='ConfigTest'">$(ProjectDir)build\</OutDir>
+    <OutDir Condition="'$(Configuration)'=='MemoryTest'">$(ProjectDir)build\</OutDir>
     <IntDir>$(ProjectDir)build\msbuild\$(Configuration)\</IntDir>
     <TargetName Condition="'$(Configuration)'=='Release'">BlipLimitFix</TargetName>
     <TargetName Condition="'$(Configuration)'=='ConfigTest'">config_test</TargetName>
+    <TargetName Condition="'$(Configuration)'=='MemoryTest'">memory_test</TargetName>
     <TargetExt Condition="'$(Configuration)'=='Release'">.asi</TargetExt>
   </PropertyGroup>
   <ItemDefinitionGroup>
@@ -67,7 +74,7 @@
       <AdditionalDependencies>ScriptHookV.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
-  <ItemDefinitionGroup Condition="'$(Configuration)'=='ConfigTest'">
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='ConfigTest' Or '$(Configuration)'=='MemoryTest'">
     <Link>
       <SubSystem>Console</SubSystem>
     </Link>
@@ -75,9 +82,15 @@
   <ItemGroup>
     <ClCompile Include="src\config.cpp" />
     <ClCompile Include="src\blip_limit_fix.cpp" Condition="'$(Configuration)'=='Release'" />
+    <ClCompile Include="src\memory.cpp" Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='MemoryTest'" />
+    <ClCompile Include="src\script.cpp" Condition="'$(Configuration)'=='Release' Or '$(Configuration)'=='MemoryTest'" />
     <ClCompile Include="tests\config_test.cpp" Condition="'$(Configuration)'=='ConfigTest'" />
+    <ClCompile Include="tests\memory_test.cpp" Condition="'$(Configuration)'=='MemoryTest'" />
+    <ClCompile Include="tests\script_test.cpp" Condition="'$(Configuration)'=='MemoryTest'" />
     <ClInclude Include="src\config.hpp" />
     <ClInclude Include="src\patch.hpp" />
+    <ClInclude Include="src\memory.hpp" />
+    <ClInclude Include="src\script.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CheckScriptHookSdk" BeforeTargets="PrepareForBuild" Condition="'$(Configuration)'=='Release'">

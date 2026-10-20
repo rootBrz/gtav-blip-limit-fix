@@ -28,11 +28,19 @@ Limit=1900
 
 ## How it works
 
-The mod finds the loaded script-program array through a signature, selects `blip_controller` by name hash, and finds its blip-count wait loop. It replaces the four-byte comparison without moving instructions or changing jump targets.
+The native scanner validates the loaded x64 PE image and searches readable spans of executable sections. Matches can cross adjacent readable protection regions, but never inaccessible or guarded gaps. Missing or ambiguous matches are refused; no guessed addresses or alternate signatures are used.
 
-ScriptHook schedules the patch callback. The mod checks periodically for script reloads; no game files or native blip counts are modified.
+The script scanner checks both the name and hash of `blip_controller`, snapshots its program/page pointers, and requires one valid wait-loop match. Before writing, it revalidates the original loop, page identities, destination permissions, and the selected program's registry slot. A detected slot replacement causes a retry instead of writing to the old allocation. This narrows the race; it does not lock the registry against later changes.
+
+ScriptHook schedules the patch callback. Fresh snapshots handle script reloads without retaining stale page pointers across yields. Game files, native counts, and the engine pool remain unchanged.
+
+Transient script-readiness, unreadable-memory, and pre-write validation failures retry at a 100 ms poll interval, stopping after 100 transient failures. This is a cumulative failure budget, **not a ten-second stabilization window**. A validated patch resets it; an absent script neither consumes nor resets it. Invalid structures/native indices and missing or ambiguous patterns remain terminal.
+
+The four-byte update is **not atomic**. Destination checks prevent writes to known-unwritable memory, but independent allocation/protection changes can race them. A write fault triggers best-effort rollback and stops the callback without retrying; rollback itself can fail. ScriptHook scheduling avoids normal VM execution during the edit, not arbitrary changes by other mods.
 
 Missing or ambiguous patterns show an error message box, then stop the callback after dismissal. Other validation failures remain log-only. Success shows no message box. The game is not terminated.
+
+`Native scan:` log entries report readable/skipped executable bytes and readable spans. These help distinguish an inaccessible scan area from a changed signature; a missing pattern alone does not identify the cause.
 
 Discovery assumes the inspected engine structures and VM instructions. Game updates can require maintenance; signature matching does not guarantee version independence.
 
@@ -75,6 +83,7 @@ On Linux with the MSBuild wrapper and Wine:
 make all           # defaults to ~/.local/bin/msbuild; override MSBUILD if needed
 make check         # portable C++17 parser, VM-expression, and scanner checks
 make check-config  # MSVC-built Windows INI checks under Wine
+make check-memory  # Windows memory-protection, PE validation, and script-patch regressions
 ```
 
 Wine checks use an isolated prefix in `build/wine-smoke`. Build outputs and private analysis files are excluded from Git.
