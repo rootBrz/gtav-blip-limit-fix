@@ -1,6 +1,6 @@
 #include "script.hpp"
 #include "memory.hpp"
-#include "patch.hpp"
+#include "guard.hpp"
 
 #include <array>
 #include <cstring>
@@ -10,7 +10,6 @@ namespace {
 constexpr std::size_t MaxScriptLength = 8 * 1024 * 1024;
 constexpr std::size_t MaxPages = MaxScriptLength / kPageSize;
 using Pages = std::array<const std::uint8_t*, MaxPages>;
-using Loop = std::array<std::uint8_t, kGuard.size()>;
 constexpr char ScriptName[] = "blip_controller";
 
 int memoryException(unsigned long code) {
@@ -33,56 +32,55 @@ const std::uint8_t* addressAt(const Pages& pages, std::size_t offset) {
 }
 
 ScriptResult findGuard(const Pages& pages, std::size_t length,
-                       std::uint32_t nativeCount, std::uint16_t limit,
-                       std::size_t& offset, Loop& loop) {
-    auto patchedPattern = kGuard;
-    const auto replacement = encodeLimit(limit);
-    for (std::size_t i = 0; i < replacement.size(); ++i)
-        patchedPattern[4 + i] = replacement[i];
+                       std::uint32_t nativeCount, std::uint16_t limit, GuardMatch& match) {
     __try {
         const auto byteAt = [&](std::size_t i) { return *addressAt(pages, i); };
-        const auto original = uniqueMatch(byteAt, length, kGuard);
-        const auto patched = uniqueMatch(byteAt, length, patchedPattern);
-        if (original > length || patched > length ||
-            (original < length && patched < length)) return ScriptResult::Ambiguous;
-        if (original == length && patched == length) return ScriptResult::MissingGuard;
-        const auto match = original < length ? original : patched;
-        for (std::size_t i = 0; i < loop.size(); ++i) loop[i] = byteAt(match + i);
-        const auto countNative = (static_cast<unsigned>(loop[2]) << 8) | loop[3];
-        const auto waitNative = (static_cast<unsigned>(loop[16]) << 8) | loop[17];
-        if (countNative >= nativeCount || waitNative >= nativeCount ||
-            countNative == waitNative) return ScriptResult::Invalid;
-        offset = match;
-        return original < length ? ScriptResult::Patched : ScriptResult::Unchanged;
+        switch (findSemanticGuard(byteAt, length, nativeCount, limit, match)) {
+        case GuardStatus::Found:
+            return match.configured ? ScriptResult::Unchanged : ScriptResult::Patched;
+        case GuardStatus::Missing:
+            return ScriptResult::MissingGuard;
+        case GuardStatus::Ambiguous:
+            return ScriptResult::Ambiguous;
+        case GuardStatus::Unsupported:
+            return ScriptResult::UnsupportedGuard;
+        case GuardStatus::Changed:
+            return ScriptResult::Transient;
+        case GuardStatus::Invalid:
+            return ScriptResult::Invalid;
+        }
+        return ScriptResult::Invalid;
     } __except (memoryException(GetExceptionCode())) {
         return ScriptResult::Transient;
     }
 }
 
-ScriptResult writeGuard(const Pages& pages, std::size_t loopOffset, const Loop& expected,
-                        const std::array<std::uint8_t, 4>& replacement) {
+ScriptResult writeGuard(const Pages& pages, const GuardMatch& match) {
     // Preflight rejection has made no writes and can be retried.
-    for (std::size_t i = 0; i < replacement.size(); ++i)
-        if (!memory::accessible(addressAt(pages, loopOffset + 4 + i), 1, true))
+    for (std::size_t i = 0; i < match.patchSize; ++i)
+        if (!memory::accessible(addressAt(pages, match.patchOffset + i), 1, true))
             return ScriptResult::Transient;
     __try {
-        for (std::size_t i = 0; i < expected.size(); ++i)
-            if (*addressAt(pages, loopOffset + i) != expected[i]) return ScriptResult::Transient;
+        for (std::size_t i = 0; i < match.windowSize; ++i)
+            if (*addressAt(pages, match.windowOffset + i) != match.expected[i])
+                return ScriptResult::Transient;
     } __except (memoryException(GetExceptionCode())) {
         return ScriptResult::Transient;
     }
-    volatile unsigned written = 0;
+    volatile std::size_t written = 0;
     __try {
-        for (unsigned i = 0; i < replacement.size(); ++i) {
-            *const_cast<volatile std::uint8_t*>(addressAt(pages, loopOffset + 4 + i)) = replacement[i];
+        for (std::size_t i = 0; i < match.patchSize; ++i) {
+            *const_cast<volatile std::uint8_t*>(addressAt(pages, match.patchOffset + i)) =
+                match.replacement[i];
             written = i + 1;
         }
         return ScriptResult::Patched;
     } __except (memoryException(GetExceptionCode())) {
         // Best effort only: these byte writes are not atomic, and restoration can fail.
         __try {
-            for (unsigned i = 0; i < written; ++i)
-                *const_cast<volatile std::uint8_t*>(addressAt(pages, loopOffset + 4 + i)) = expected[4 + i];
+            for (std::size_t i = 0; i < written; ++i)
+                *const_cast<volatile std::uint8_t*>(addressAt(pages, match.patchOffset + i)) =
+                    match.expected[match.patchOffset - match.windowOffset + i];
         } __except (memoryException(GetExceptionCode())) {
             // Do not retry or assume the original expression was restored.
         }
@@ -113,9 +111,12 @@ bool resolveProgramArray(HMODULE module, const memory::ImageScan& scan,
 
 ProgramArrayScan findProgramArray(HMODULE module) {
     ProgramArrayScan result;
-    result.original = memory::findImagePattern(module, kProgramLocator.data(), kProgramLocator.size());
-    result.scrDbg = memory::findImagePattern(module, kProgramLocatorScrDbg.data(), kProgramLocatorScrDbg.size());
-    result.legacy = memory::findImagePattern(module, kProgramLocatorLegacy.data(), kProgramLocatorLegacy.size());
+    const std::array<memory::ImagePattern, 3> patterns = {{
+        {kProgramLocator.data(), kProgramLocator.size(), result.original},
+        {kProgramLocatorScrDbg.data(), kProgramLocatorScrDbg.size(), result.scrDbg},
+        {kProgramLocatorLegacy.data(), kProgramLocatorLegacy.size(), result.legacy},
+    }};
+    memory::findImagePatterns(module, patterns.data(), patterns.size());
     // Missing alone permits fallback. Never hide ambiguity, invalid images, or scan faults.
     for (const auto* scan : {&result.original, &result.scrDbg, &result.legacy}) {
         if (scan->status != memory::ScanStatus::Missing && scan->status != memory::ScanStatus::Found) {
@@ -180,9 +181,8 @@ ScriptResult patchController(const ScriptProgram* const* programs,
         const auto size = remaining < kPageSize ? remaining : kPageSize;
         if (!memory::accessible(pages[i], size)) return ScriptResult::Transient;
     }
-    std::size_t offset = 0;
-    Loop loop;
-    const auto result = findGuard(pages, program.length, program.nativeCount, limit, offset, loop);
+    GuardMatch match;
+    const auto result = findGuard(pages, program.length, program.nativeCount, limit, match);
     if (result != ScriptResult::Patched && result != ScriptResult::Unchanged) return result;
     if (result == ScriptResult::Patched) {
         ScriptProgram current;
@@ -194,10 +194,10 @@ ScriptResult patchController(const ScriptProgram* const* programs,
         const ScriptProgram* registered = nullptr;
         if (!memory::read(programs + selectedSlot, &registered, sizeof(registered)) ||
             registered != selected) return ScriptResult::Transient;
-        const auto written = writeGuard(pages, offset, loop, encodeLimit(limit));
+        const auto written = writeGuard(pages, match);
         if (written != ScriptResult::Patched) return written;
     }
-    guardOffset = offset + 4;
+    guardOffset = match.patchOffset;
     return result;
 }
 } // namespace blip

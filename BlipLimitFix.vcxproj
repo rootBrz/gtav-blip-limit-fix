@@ -91,6 +91,7 @@
     <ClInclude Include="src\patch.hpp" />
     <ClInclude Include="src\memory.hpp" />
     <ClInclude Include="src\script.hpp" />
+    <ClInclude Include="src\guard.hpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <Target Name="CheckScriptHookSdk" BeforeTargets="PrepareForBuild" Condition="'$(Configuration)'=='Release'">

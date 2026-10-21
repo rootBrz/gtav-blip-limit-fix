@@ -1,4 +1,4 @@
-#include "patch.hpp"
+#include "guard.hpp"
 
 #include <algorithm>
 #include <array>
@@ -58,9 +58,7 @@ static std::array<std::uint8_t, N> materialize(const std::array<int, N>& pattern
 static void testLimits() {
     constexpr std::array<std::uint16_t, 3> limits = {150, 1900, 1997};
     constexpr std::array<std::wstring_view, 3> text = {L"150", L"1900", L"1997"};
-    std::array<std::uint8_t, 4> original{};
-    for (std::size_t i = 0; i < original.size(); ++i)
-        original[i] = static_cast<std::uint8_t>(blip::kGuard[4 + i]);
+    constexpr std::array<std::uint8_t, 4> original = {0x25, 0x96, 0x0c, 0x06};
     for (int count = 0; count <= 2000; ++count)
         assert(evaluate(original, count) == (count >= 150));
 
@@ -75,12 +73,6 @@ static void testLimits() {
         assert(evaluate(code, parsed));
         assert(evaluate(code, parsed + 1));
 
-        auto loop = materialize(blip::kGuard);
-        assert(blip::uniqueMatch([&](std::size_t j) { return loop[j]; }, loop.size(),
-                                 blip::kGuard) == 0);
-        std::copy(code.begin(), code.end(), loop.begin() + 4);
-        assert(blip::uniqueMatch([&](std::size_t j) { return loop[j]; }, loop.size(),
-                                 blip::kGuard) == loop.size());
     }
 
     for (const auto invalid : {
@@ -131,20 +123,11 @@ static void testMatcher(const std::array<int, N>& pattern) {
     assert(match(N) == 0); // Native indices/displacements remain wildcards.
 }
 
-static void testGuardBranches() {
-    const auto guard = materialize(blip::kGuard);
-    for (const std::size_t jumpByte : {8u, 9u, 10u, 18u, 19u, 20u}) {
-        auto mutated = guard;
-        mutated[jumpByte] ^= 1;
-        assert(blip::uniqueMatch([&](std::size_t i) { return mutated[i]; }, mutated.size(),
-                                 blip::kGuard) == mutated.size());
-    }
-}
 
 static void testPagedMatcher() {
     constexpr auto pageSize = blip::kPageSize;
-    const auto guard = materialize(blip::kGuard);
-    const std::size_t size = 2 * pageSize + guard.size() - 3;
+    const auto bytes = materialize(blip::kProgramLocator);
+    const std::size_t size = 2 * pageSize + bytes.size() - 3;
     std::array<std::vector<std::uint8_t>, 3> pages = {
         std::vector<std::uint8_t>(pageSize), std::vector<std::uint8_t>(pageSize),
         std::vector<std::uint8_t>(size - 2 * pageSize)
@@ -153,17 +136,16 @@ static void testPagedMatcher() {
         assert(i < size);
         return pages[i / pageSize][i % pageSize];
     };
-    auto match = [&] { return blip::uniqueMatch(byteAt, size, blip::kGuard); };
-    const std::size_t first = pageSize - 6; // Patched expression crosses a page boundary too.
-    for (std::size_t i = 0; i < guard.size(); ++i) byteAt(first + i) = guard[i];
+    auto match = [&] { return blip::uniqueMatch(byteAt, size, blip::kProgramLocator); };
+    const std::size_t first = pageSize - 6;
+    for (std::size_t i = 0; i < bytes.size(); ++i) byteAt(first + i) = bytes[i];
     assert(match() == first);
-    const std::size_t last = size - guard.size();
-    for (std::size_t i = 0; i < guard.size(); ++i) byteAt(last + i) = guard[i];
+    const std::size_t last = size - bytes.size();
+    for (std::size_t i = 0; i < bytes.size(); ++i) byteAt(last + i) = bytes[i];
     assert(match() == size + 1);
-    const auto code = blip::encodeLimit(blip::kDefaultLimit);
-    for (std::size_t i = 0; i < code.size(); ++i) byteAt(first + 4 + i) = code[i];
-    assert(match() == last); // Last offset spans another pair of separately allocated pages.
-    byteAt(last + 19) ^= 1;
+    byteAt(first) ^= 1;
+    assert(match() == last); // Last offset spans separately allocated pages.
+    byteAt(last) ^= 1;
     assert(match() == size);
 }
 
@@ -182,16 +164,27 @@ static void scanFile(const char* path, const std::array<int, N>& pattern) {
     assert(offset < bytes.size());
 }
 
+static void scanGuardFile(const char* path) {
+    std::ifstream input(path, std::ios::binary);
+    assert(input);
+    const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(input)), {});
+    assert(!input.bad());
+    blip::GuardMatch match;
+    const auto status = blip::findSemanticGuard([&](std::size_t i) { return bytes[i]; },
+        bytes.size(), 55, blip::kDefaultLimit, match); // Captured script has 55 natives.
+    assert(status == blip::GuardStatus::Found && !match.configured);
+    std::printf("%s: semantic guard +0x%zX, predicate +0x%zX (%zu bytes)\n",
+                path, match.windowOffset, match.patchOffset, match.patchSize);
+}
+
 int main(int argc, char** argv) {
     assert(argc <= 3);
     testLimits();
-    testMatcher(blip::kGuard);
     testMatcher(blip::kProgramLocator);
     testMatcher(blip::kProgramLocatorScrDbg);
     testMatcher(blip::kProgramLocatorLegacy);
-    testGuardBranches();
     testPagedMatcher();
     if (argc >= 2) scanFile(argv[1], blip::kProgramLocator);
-    if (argc >= 3) scanFile(argv[2], blip::kGuard);
-    std::puts("PASS: limit parsing/encoding, VM predicates and stack balance, unique and paged scanners");
+    if (argc >= 3) scanGuardFile(argv[2]);
+    std::puts("PASS: limit parsing/encoding, VM predicate stack balance and native locator scanners");
 }

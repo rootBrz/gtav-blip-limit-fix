@@ -14,11 +14,6 @@ inline constexpr std::uint32_t kScriptHash = 0x80cfe974; // joaat("blip_controll
 inline constexpr std::size_t kPageSize = 0x4000;
 inline constexpr std::size_t kProgramSlots = 176;
 
-// Native(0 args, 1 result), count predicate, JZ past WAIT(2000), jump back.
-inline constexpr std::array<int, 21> kGuard = {
-    0x2c, 0x01, -1, -1, 0x25, 0x96, 0x0c, 0x06,
-    0x56, 0x0a, 0x00, 0x43, 0xd0, 0x07, 0x2c, 0x04, -1, -1, 0x55, 0xeb, 0xff
-};
 inline constexpr std::array<int, 25> kProgramLocator = {
     0x48, 0x8d, 0x05, -1, -1, -1, -1,
     0x0f, 0xb6, 0x4c, 0x02, 0x01, 0x48, 0x85, 0xc9, 0x74, -1,

@@ -262,8 +262,9 @@ void testRangeBoundsAndWildcards() {
     for (std::size_t i = 0; i < length - 1; ++i)
         image.base[offset + 1 + i] = static_cast<std::uint8_t>(
             blip::kProgramLocator[i] == -1 ? 0xa0 + i : blip::kProgramLocator[i]);
-    image.place(image.page + 31, blip::kGuard);
-    expectFound(image.scan(blip::kGuard), image, image.page + 31);
+    constexpr std::array<int, 5> unrelated = {0xa1, -1, 0xb2, 0xc3, 0xd4};
+    image.place(image.page + 31, unrelated);
+    expectFound(image.scan(unrelated), image, image.page + 31);
     expectMissing(image.scan());
 }
 
@@ -410,6 +411,50 @@ void placeLocator(Image& image, std::size_t offset, const std::array<int, N>& pa
            delta <= (std::numeric_limits<std::int32_t>::max)());
     const auto displacement = static_cast<std::int32_t>(delta);
     std::memcpy(image.base + offset + 3, &displacement, sizeof(displacement));
+}
+
+void testSimultaneousLocators() {
+    for (const DWORD protection : {DWORD(PAGE_NOACCESS), DWORD(PAGE_READWRITE | PAGE_GUARD),
+                                   DWORD(PAGE_EXECUTE)}) {
+        for (unsigned test = 0; test < 3; ++test) {
+            Image image(2);
+            image.setSection(0, image.page, image.page, false);
+            image.setSection(1, 2 * image.page, image.size - 2 * image.page);
+            const auto array = 2 * image.page;
+            const auto original = 3 * image.page - blip::kProgramLocator.size() / 2;
+            const auto scrDbg = 5 * image.page + 32;
+            const auto legacy = image.size - blip::kProgramLocatorLegacy.size();
+            placeLocator(image, original, blip::kProgramLocator, array);
+            placeLocator(image, scrDbg, blip::kProgramLocatorScrDbg, array);
+            placeLocator(image, legacy, blip::kProgramLocatorLegacy, test == 1 ? array + 8 : array);
+            if (test == 2)
+                placeLocator(image, 2 * image.page + 32, blip::kProgramLocator, array);
+            // Duplicates in non-code and unreadable pages must not count for any locator.
+            for (const auto page : {image.page, 4 * image.page}) {
+                placeLocator(image, page + 64, blip::kProgramLocator, array);
+                placeLocator(image, page + 192, blip::kProgramLocatorScrDbg, array);
+                placeLocator(image, page + 320, blip::kProgramLocatorLegacy, array);
+            }
+            image.protect(3 * image.page, image.page, PAGE_READONLY);
+            image.protect(4 * image.page, image.page, protection);
+            image.protect(5 * image.page, 3 * image.page, PAGE_EXECUTE_READ);
+            const auto result = blip::findProgramArray(reinterpret_cast<HMODULE>(image.base));
+            assert(result.status == (test == 0 ? ScanStatus::Found :
+                                     test == 1 ? ScanStatus::Invalid : ScanStatus::Ambiguous));
+            if (test == 2) expectAmbiguous(result.original);
+            else expectFound(result.original, image, original);
+            expectFound(result.scrDbg, image, scrDbg);
+            expectFound(result.legacy, image, legacy);
+            for (const auto* scan : {&result.original, &result.scrDbg, &result.legacy}) {
+                assert(scan->scannedBytes == 5 * image.page);
+                assert(scan->skippedBytes == image.page);
+                assert(scan->readableRanges == 2);
+            }
+            assert(image.protection(4 * image.page) == protection);
+            assert(result.programs == (test == 0 ?
+                reinterpret_cast<const blip::ScriptProgram* const*>(image.base + array) : nullptr));
+        }
+    }
 }
 
 void testProgramLocators() {
@@ -561,6 +606,7 @@ int main(int argc, char** argv) {
     testMalformedHeaders();
     testMalformedSections();
     testAccessibleAndRead();
+    testSimultaneousLocators();
     testProgramLocators();
     testLegacyLocators();
     if (argc == 2) testCapturedImage(argv[1]);

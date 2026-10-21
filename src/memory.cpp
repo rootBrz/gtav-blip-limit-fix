@@ -53,35 +53,46 @@ int memoryException(DWORD code) {
         code == STATUS_GUARD_PAGE_VIOLATION ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH;
 }
 
-void scanRange(std::uintptr_t start, std::size_t size, const int* pattern,
-               std::size_t patternSize, ImageScan& result) {
-    ++result.readableRanges;
-    result.scannedBytes += size;
-    if (result.status == ScanStatus::Ambiguous || size < patternSize) return;
+void scanRange(std::uintptr_t start, std::size_t size,
+               const ImagePattern* patterns, std::size_t count) {
+    std::size_t minimumSize = size;
+    std::size_t active = 0;
+    for (std::size_t p = 0; p < count; ++p) {
+        const auto& pattern = patterns[p];
+        auto& result = pattern.result;
+        if (result.status == ScanStatus::Invalid) continue;
+        ++result.readableRanges;
+        result.scannedBytes += size;
+        if (result.status == ScanStatus::Ambiguous || size < pattern.size) continue;
+        if (pattern.size < minimumSize) minimumSize = pattern.size;
+        ++active;
+    }
+    if (!active) return;
     const auto bytes = reinterpret_cast<const std::uint8_t*>(start);
-    for (std::size_t i = 0; i <= size - patternSize; ++i) {
-        std::size_t j = 0;
-        for (; j < patternSize; ++j)
-            if (pattern[j] != -1 && bytes[i + j] != pattern[j]) break;
-        if (j != patternSize) continue;
-        if (result.status == ScanStatus::Missing) {
-            result.status = ScanStatus::Found;
-            result.match = bytes + i;
-        } else {
-            result.status = ScanStatus::Ambiguous;
-            result.match = nullptr;
-            return;
+    for (std::size_t i = 0; i <= size - minimumSize; ++i) {
+        for (std::size_t p = 0; p < count; ++p) {
+            const auto& pattern = patterns[p];
+            auto& result = pattern.result;
+            if (result.status == ScanStatus::Invalid || result.status == ScanStatus::Ambiguous ||
+                pattern.size > size - i) continue;
+            std::size_t j = 0;
+            for (; j < pattern.size; ++j)
+                if (pattern.bytes[j] != -1 && bytes[i + j] != pattern.bytes[j]) break;
+            if (j != pattern.size) continue;
+            if (result.status == ScanStatus::Missing) {
+                result.status = ScanStatus::Found;
+                result.match = bytes + i;
+            } else {
+                result.status = ScanStatus::Ambiguous;
+                result.match = nullptr;
+                if (!--active) return;
+            }
         }
     }
 }
 
-void scanImage(HMODULE module, const int* pattern, std::size_t patternSize, ImageScan& result) {
-    result.status = ScanStatus::Invalid;
-    if (!module || !pattern || !patternSize ||
-        patternSize > ~std::size_t{0} / sizeof(*pattern) ||
-        !accessible(pattern, patternSize * sizeof(*pattern))) return;
-    for (std::size_t i = 0; i < patternSize; ++i)
-        if (pattern[i] < -1 || pattern[i] > 255) return;
+void scanImage(HMODULE module, const ImagePattern* patterns, std::size_t count) {
+    if (!module) return;
 
     const auto base = reinterpret_cast<std::uintptr_t>(module);
     IMAGE_DOS_HEADER dos;
@@ -122,8 +133,21 @@ void scanImage(HMODULE module, const int* pattern, std::size_t patternSize, Imag
         }
     }
 
-    result.imageSize = imageSize;
-    result.status = ScanStatus::Missing;
+    bool anyPattern = false;
+    for (std::size_t p = 0; p < count; ++p) {
+        const auto& pattern = patterns[p];
+        if (!pattern.bytes || !pattern.size ||
+            pattern.size > ~std::size_t{0} / sizeof(*pattern.bytes) ||
+            !accessible(pattern.bytes, pattern.size * sizeof(*pattern.bytes))) continue;
+        std::size_t j = 0;
+        for (; j < pattern.size; ++j)
+            if (pattern.bytes[j] < -1 || pattern.bytes[j] > 255) break;
+        if (j != pattern.size) continue;
+        pattern.result.imageSize = imageSize;
+        pattern.result.status = ScanStatus::Missing;
+        anyPattern = true;
+    }
+    if (!anyPattern) return;
     for (unsigned i = 0; i < nt.FileHeader.NumberOfSections; ++i) {
         const auto& section = sections[i];
         if (!(section.Characteristics & IMAGE_SCN_MEM_EXECUTE) || !section.Misc.VirtualSize) continue;
@@ -135,8 +159,10 @@ void scanImage(HMODULE module, const int* pattern, std::size_t patternSize, Imag
             std::uintptr_t regionEnd;
             if (!queryRegion(address, info, regionEnd) ||
                 reinterpret_cast<std::uintptr_t>(info.AllocationBase) != base) {
-                result.status = ScanStatus::Fault;
-                result.match = nullptr;
+                for (std::size_t p = 0; p < count; ++p) {
+                    patterns[p].result.status = ScanStatus::Fault;
+                    patterns[p].result.match = nullptr;
+                }
                 return;
             }
             if (regionEnd > end) regionEnd = end;
@@ -144,15 +170,17 @@ void scanImage(HMODULE module, const int* pattern, std::size_t patternSize, Imag
                 if (!readableStart) readableStart = address;
             } else {
                 if (readableStart) {
-                    scanRange(readableStart, address - readableStart, pattern, patternSize, result);
+                    scanRange(readableStart, address - readableStart, patterns, count);
                     readableStart = 0;
                 }
-                result.skippedBytes += regionEnd - address;
+                for (std::size_t p = 0; p < count; ++p)
+                    if (patterns[p].result.status != ScanStatus::Invalid)
+                        patterns[p].result.skippedBytes += regionEnd - address;
             }
             address = regionEnd;
         }
         if (readableStart)
-            scanRange(readableStart, end - readableStart, pattern, patternSize, result);
+            scanRange(readableStart, end - readableStart, patterns, count);
     }
 }
 
@@ -183,13 +211,24 @@ bool read(const void* source, void* destination, std::size_t size) {
 
 ImageScan findImagePattern(HMODULE module, const int* pattern, std::size_t patternSize) {
     ImageScan result;
-    __try {
-        scanImage(module, pattern, patternSize, result);
-    } __except (memoryException(GetExceptionCode())) {
-        result.status = ScanStatus::Fault;
-        result.match = nullptr;
-    }
+    const ImagePattern query{pattern, patternSize, result};
+    findImagePatterns(module, &query, 1);
     return result;
+}
+
+void findImagePatterns(HMODULE module, const ImagePattern* patterns, std::size_t count) {
+    for (std::size_t p = 0; p < count; ++p) {
+        patterns[p].result = {};
+        patterns[p].result.status = ScanStatus::Invalid;
+    }
+    __try {
+        scanImage(module, patterns, count);
+    } __except (memoryException(GetExceptionCode())) {
+        for (std::size_t p = 0; p < count; ++p) {
+            patterns[p].result.status = ScanStatus::Fault;
+            patterns[p].result.match = nullptr;
+        }
+    }
 }
 
 } // namespace blip::memory

@@ -64,7 +64,6 @@ void run() {
     }
     const auto programs = scan.programs;
     log("Located program array dynamically; waiting for blip_controller");
-    bool applied = false;
     unsigned transientFailures = 0;
     for (;;) {
         std::size_t offset = 0;
@@ -72,20 +71,17 @@ void run() {
         const bool pollAgain = blip::continueScriptPolling(result, transientFailures);
         switch (result) {
         case blip::ScriptResult::Patched:
-            log("PATCHED: blip_controller +0x%zX: ceiling 150 -> %u",
+            log("PATCHED: semantic WAIT(2000) guard in blip_controller +0x%zX: ceiling 150 -> %u",
                 offset, static_cast<unsigned>(limit));
             log("Native pool unchanged; native counts remain accurate");
-            applied = true;
-            break;
+            return;
         case blip::ScriptResult::Unchanged:
-            if (!applied) log("blip_controller already has the configured ceiling");
-            applied = true;
-            break;
+            log("UNCHANGED: semantic WAIT(2000) guard in blip_controller +0x%zX: ceiling %u",
+                offset, static_cast<unsigned>(limit));
+            return;
         case blip::ScriptResult::Waiting:
-            applied = false;
             break;
         case blip::ScriptResult::Transient:
-            applied = false;
             if (!pollAgain) {
                 log("REFUSED: script memory did not stabilize after %u transient failures",
                     transientFailures);
@@ -99,6 +95,9 @@ void run() {
             log("REFUSED: active-blip-count WAIT(2000) guard not found");
             patternFailure(L"The script pattern was not found. BlipLimitFix has stopped. See BlipLimitFix.log.");
             return;
+        case blip::ScriptResult::UnsupportedGuard:
+            log("REFUSED: semantic WAIT(2000) guard recognized, but its predicate span cannot hold the configured ceiling without moving instructions");
+            return;
         case blip::ScriptResult::Ambiguous:
             log("REFUSED: ambiguous blip_controller program or guard");
             patternFailure(L"The script or its pattern is ambiguous. BlipLimitFix has stopped. See BlipLimitFix.log.");
@@ -110,8 +109,8 @@ void run() {
             log("REFUSED: script write fault; rollback was best effort and may be incomplete. No retry; restart the game.");
             return;
         }
-        // Refresh program/page snapshots after every yield, including script reloads.
-        scriptWait(applied ? 1000 : blip::kScriptRetryMs);
+        // Refresh program/page snapshots after each startup or transient retry.
+        scriptWait(blip::kScriptRetryMs);
     }
 }
 

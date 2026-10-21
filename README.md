@@ -8,7 +8,7 @@ ASI mod that raises the vanilla `blip_controller` script's 150-active-blip thres
 
 1. Use **Story Mode only**, with BattlEye disabled, an ASI loader and [ScriptHookV](https://www.dev-c.com/gtav/scripthookv/) compatible with your game edition/build.
 2. Close the game. Copy `BlipLimitFix.asi` and `BlipLimitFix.ini` into the game directory beside `GTA5_Enhanced.exe` (Enhanced) or `GTA5.exe` (Legacy, unverified). Preserve your existing INI when upgrading. The archive retains its existing `BlipLimitFix-Enhanced.zip` name for compatibility.
-3. Start Story Mode. Check `BlipLimitFix.log` beside the ASI for `PATCHED:`.
+3. Start Story Mode. Check `BlipLimitFix.log` beside the ASI for `PATCHED:` or `UNCHANGED:`.
 
 To uninstall, close the game and remove the ASI and INI. Hot unloading is not supported.
 
@@ -28,17 +28,19 @@ Limit=1900
 
 ## How it works
 
-The native scanner validates the loaded x64 PE image and searches readable spans of executable sections. Matches can cross adjacent readable protection regions, but never inaccessible or guarded gaps. It checks the original Enhanced program-registry locator plus the [scrDbg Enhanced and Legacy locators](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/app/game/gta5/GTA5.cpp): `44 88 05 ? ? ? ? 48 89 F9` (GEN9) and `48 8D 0D ? ? ? ? 41 8B D6 E8 ? ? ? ? FF 05` (GEN8). The [internal scrDbg GEN8 registry lookup](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/lib/game/GTA5.cpp) corroborates the Legacy signature. Each locator must be unique when present. Any locator alone can resolve the array; all present locators must agree. Ambiguity, scan faults, invalid images, changed locator bytes, invalid signed RIP-relative targets, or disagreement stop patching, never trigger fallback. If all are missing, the existing missing-pattern dialog refuses patching. All three use displacement offset 3, instruction length 7, and registry offset `0xD8`; the full 176-pointer array must fit inside the image and passes the existing guarded read before script inspection.
+The native scanner validates the loaded x64 PE image and traverses readable spans of executable sections once, comparing all three program-registry locators in that pass. Matches can cross adjacent readable protection regions, but never inaccessible or guarded gaps. It checks the original Enhanced program-registry locator plus the [scrDbg Enhanced and Legacy locators](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/app/game/gta5/GTA5.cpp): `44 88 05 ? ? ? ? 48 89 F9` (GEN9) and `48 8D 0D ? ? ? ? 41 8B D6 E8 ? ? ? ? FF 05` (GEN8). The [internal scrDbg GEN8 registry lookup](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/lib/game/GTA5.cpp) corroborates the Legacy signature. Each locator retains independent status, scan statistics, and uniqueness checks. Each locator must be unique when present. Any locator alone can resolve the array; all present locators must agree. Ambiguity, scan faults, invalid images, changed locator bytes, invalid signed RIP-relative targets, or disagreement stop patching, never trigger fallback. If all are missing, the existing missing-pattern dialog refuses patching. All three use displacement offset 3, instruction length 7, and registry offset `0xD8`; the full 176-pointer array must fit inside the image and passes the existing guarded read before script inspection.
 
-The script scanner checks both the name and hash of `blip_controller`, snapshots its program/page pointers, and requires one valid wait-loop match. Before writing, it revalidates the original loop, page identities, destination permissions, and the selected program's registry slot. A detected slot replacement causes a retry instead of writing to the old allocation. This narrows the race; it does not lock the registry against later changes.
+The script scanner checks both the name and hash of `blip_controller`, then decodes VM instructions instead of requiring an exact byte sequence. It requires one supported count-comparison/`WAIT(2000)` loop with the correct comparison polarity, branch destinations, and loop-back. Native-call argument/result counts and table indices are checked; native hashes are not resolved.
 
-The pinned scrDbg source uses one [script-program layout](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/app/game/gta5/types/ScriptProgramGTA5.hpp) for GEN8 and GEN9. The shared 21-byte script wait-loop signature, name/hash checks, page validation, and native-table readiness checks remain mandatory for either discovery path. A Legacy registry match alone does not establish a compatible script or engine capacity.
+The decoder accepts supported integer encodings, comparison polarities, fused comparisons, and NOP padding within a 256-byte loop window. The replacement must fit the original predicate span. Following code and jump offsets stay unchanged; direct control-flow entries into the rewritten span's interior are refused. Before writing, the mod revalidates an immutable code snapshot, page identities, permissions, and selected registry slot. These checks narrow races; they do not lock the registry.
 
-ScriptHook schedules the patch callback. Fresh snapshots handle script reloads without retaining stale page pointers across yields. Game files, native counts, and the engine pool remain unchanged.
+The pinned scrDbg source uses one [script-program layout](https://github.com/ShinyWasabi/scrDbg/blob/2700d377e0d0b6452740eefbc5c098ba2bd38d0f/src/app/game/gta5/types/ScriptProgramGTA5.hpp) for GEN8 and GEN9. Both discovery paths require the same bounded loop decoder, name/hash checks, page validation, and native-table readiness checks. A Legacy registry match alone does not establish a compatible script or engine capacity.
 
-Transient script-readiness, unreadable-memory, and pre-write validation failures retry at a 100 ms poll interval, stopping after 100 transient failures. This is a cumulative failure budget, **not a ten-second stabilization window**. A validated patch resets it; an absent script neither consumes nor resets it. Invalid structures/native indices and missing or ambiguous patterns remain terminal.
+ScriptHook restarts the patch callback on each save load or reload. Each callback locates the native registry once, waits for `blip_controller`, and returns immediately after patching or recognizing the configured guard. There are no post-success VM rescans. Startup and transient retries use fresh snapshots without retaining stale page pointers across yields. Game files, native counts, and the engine pool remain unchanged.
 
-The four-byte update is **not atomic**. Destination checks prevent writes to known-unwritable memory, but independent allocation/protection changes can race them. A write fault triggers best-effort rollback and stops the callback without retrying; rollback itself can fail. ScriptHook scheduling avoids normal VM execution during the edit, not arbitrary changes by other mods.
+Transient script-readiness, unreadable-memory, changed-code, and pre-write validation failures retry at a 100 ms poll interval, stopping after 100 transient failures. This is a cumulative per-callback failure budget, **not a ten-second stabilization window**. An absent script neither consumes nor resets it; a new callback starts with a fresh budget. Invalid structures/native indices, missing or ambiguous patterns, and insufficient predicate space remain terminal.
+
+The in-place predicate update is **not atomic**. Destination checks prevent writes to known-unwritable memory, but independent allocation/protection changes can race them. A write fault triggers best-effort rollback and stops the callback without retrying; rollback itself can fail. ScriptHook scheduling avoids normal VM execution during the edit, not arbitrary changes by other mods.
 
 Missing or ambiguous patterns show an error message box, then stop the callback after dismissal. Other validation failures remain log-only. Success shows no message box. The game is not terminated.
 
@@ -83,7 +85,7 @@ On Linux with the MSBuild wrapper and Wine:
 
 ```sh
 make all           # defaults to ~/.local/bin/msbuild; override MSBUILD if needed
-make check         # portable C++17 parser, VM-expression, and scanner checks
+make check         # portable parser, VM-expression, instruction-decoder, and guard checks
 make check-config  # MSVC-built Windows INI checks under Wine
 make check-memory  # Windows memory-protection, PE validation, and script-patch regressions
 ```
@@ -97,7 +99,7 @@ env WINEPREFIX="$PWD/build/wine-smoke" WINEDEBUG=-all WINEDLLOVERRIDES=mscoree,m
   wine build/memory_test.exe 'Z:\absolute\path\GTA5_Enhanced.runtime.exe'
 ```
 
-The deterministic memory tests cover Enhanced-only and Legacy-only discovery, every Enhanced/Legacy agreement, pairwise conflicts, ambiguous locators without fallback, invalid signed RIP targets/images, and guarded program-array reads. Located-script fixtures check native-pointer unavailability returns `Transient`, recovery writes only the intended four bytes, and a second call leaves the patch unchanged. The optional capture check confirms the inspected Enhanced 1.0.1158.16 RVAs, both Enhanced fallback directions, and no spurious Legacy match without executing game code. These tests do not establish live Legacy or EGS compatibility.
+The deterministic memory tests cover Enhanced/Legacy discovery, locator agreement/conflicts, signed RIP bounds, protected memory, script reloads, retry limits, and write preflight. Semantic guard tests cover supported equivalent encodings and reject malformed or ambiguous control flow. The optional capture check confirms the inspected Enhanced RVAs without executing game code. These checks do not establish live Legacy or EGS compatibility.
 
 ## Development
 

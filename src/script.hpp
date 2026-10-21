@@ -29,23 +29,19 @@ static_assert(offsetof(ScriptProgram, nameHash) == 0x58);
 static_assert(offsetof(ScriptProgram, name) == 0x60);
 
 enum class ScriptResult {
-    Waiting, Patched, Unchanged, Transient, MissingGuard, Ambiguous, Invalid, WriteFailed
+    Waiting, Patched, Unchanged, Transient, MissingGuard, UnsupportedGuard, Ambiguous, Invalid, WriteFailed
 };
 
 inline constexpr unsigned kScriptFailureLimit = 100;
 inline constexpr unsigned kScriptRetryMs = 100;
 
-// Cumulative failure budget, not elapsed time. Only validated success resets it.
+// Cumulative per-callback failure budget, not elapsed time. Waiting preserves it.
 constexpr bool continueScriptPolling(ScriptResult result, unsigned& failures) {
     switch (result) {
     case ScriptResult::Transient:
         if (failures < kScriptFailureLimit) ++failures;
         return failures < kScriptFailureLimit;
     case ScriptResult::Waiting:
-        return true;
-    case ScriptResult::Patched:
-    case ScriptResult::Unchanged:
-        failures = 0;
         return true;
     default:
         return false;
@@ -64,6 +60,7 @@ struct ProgramArrayScan {
 ProgramArrayScan findProgramArray(HMODULE module);
 
 // Reads fresh program/page snapshots each call; no cached pointer survives a yield.
+// guardOffset reports the predicate rewrite start, including any preserved padding.
 ScriptResult patchController(const ScriptProgram* const* programs,
                              std::uint16_t limit, std::size_t& guardOffset);
 
