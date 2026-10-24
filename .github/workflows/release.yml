@@ -120,6 +120,7 @@ jobs:
           mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
           file_id: ${{ vars.NEXUSMODS_FILE_ID }}
           filename: BlipLimitFix-Enhanced.zip
+          display_name: Blip Limit Fix
           version: ${{ steps.ver.outputs.version }}
           changelog: ${{ steps.notes.outputs.changelog }}
           category: main
