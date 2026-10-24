@@ -27,20 +27,21 @@ jobs:
         with:
           fetch-depth: 0
 
-      # An already-tagged VERSION (or a manual run) builds and tests but publishes nothing.
+      # Publishes only on a push whose VERSION is untagged. A manual run is a dry
+      # run: it builds, tests and previews the changelog, and publishes nothing.
       - name: Read version
         id: ver
         shell: bash
         run: |
-          echo "release=false" >> "$GITHUB_OUTPUT"
-          [ "$GITHUB_EVENT_NAME" = push ] || exit 0
           v=$(tr -d '[:space:]' < VERSION)
           [[ $v =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "Invalid VERSION: '$v'"; exit 1; }
+          release=false
           if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
             echo "v$v already exists; not releasing"
-            exit 0
+          elif [ "$GITHUB_EVENT_NAME" = push ]; then
+            release=true
           fi
-          { echo "release=true"; echo "version=$v"; echo "tag=v$v"; } >> "$GITHUB_OUTPUT"
+          { echo "release=$release"; echo "version=$v"; echo "tag=v$v"; } >> "$GITHUB_OUTPUT"
 
       - uses: microsoft/setup-msbuild@v2
 
@@ -80,7 +81,7 @@ jobs:
 
       # Changelog = commit subjects since the previous version tag.
       - name: Write changelog
-        if: steps.ver.outputs.release == 'true'
+        if: steps.ver.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
         id: notes
         shell: bash
         run: |
@@ -93,6 +94,10 @@ jobs:
             cat notes.md
             echo "EOF_NOTES"
           } >> "$GITHUB_OUTPUT"
+          {
+            echo "### Changelog for ${{ steps.ver.outputs.tag }} (publish: ${{ steps.ver.outputs.release }})"
+            cat notes.md
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Create GitHub release
         if: steps.ver.outputs.release == 'true'
