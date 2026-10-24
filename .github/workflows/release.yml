@@ -79,16 +79,20 @@ jobs:
           name: BlipLimitFix-Enhanced
           path: BlipLimitFix-Enhanced.zip
 
-      # Changelog = commit subjects since the previous version tag.
+      # Changelog = the matching "## <version>" section of CHANGELOG.md.
       - name: Write changelog
         if: steps.ver.outputs.release == 'true' || github.event_name == 'workflow_dispatch'
         id: notes
         shell: bash
         run: |
-          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
-          range=${prev:+$prev..}HEAD
-          git log --no-merges --pretty='- %s' "$range" > notes.md
-          [ -s notes.md ] || echo "- No changes listed" > notes.md
+          awk -v v="${{ steps.ver.outputs.version }}" '
+            /^## / { on = ($2 == v); next }
+            on' CHANGELOG.md | sed -e '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "CHANGELOG.md has no '## ${{ steps.ver.outputs.version }}' section"
+            [ "${{ steps.ver.outputs.release }}" = true ] && exit 1
+            echo "- (no changelog section yet)" > notes.md
+          fi
           {
             echo "changelog<<EOF_NOTES"
             cat notes.md
