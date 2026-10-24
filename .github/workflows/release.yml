@@ -1,8 +1,10 @@
 name: release
 
 on:
+  # Bump VERSION on main to release. Other pushes do not run this workflow.
   push:
-    tags: ['v*']
+    branches: [main]
+    paths: [VERSION]
   workflow_dispatch:
 
 permissions:
@@ -24,6 +26,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      # An already-tagged VERSION (or a manual run) builds and tests but publishes nothing.
+      - name: Read version
+        id: ver
+        shell: bash
+        run: |
+          echo "release=false" >> "$GITHUB_OUTPUT"
+          [ "$GITHUB_EVENT_NAME" = push ] || exit 0
+          v=$(tr -d '[:space:]' < VERSION)
+          [[ $v =~ ^[0-9]+(\.[0-9]+)+$ ]] || { echo "Invalid VERSION: '$v'"; exit 1; }
+          if git rev-parse -q --verify "refs/tags/v$v" >/dev/null; then
+            echo "v$v already exists; not releasing"
+            exit 0
+          fi
+          { echo "release=true"; echo "version=$v"; echo "tag=v$v"; } >> "$GITHUB_OUTPUT"
 
       - uses: microsoft/setup-msbuild@v2
 
@@ -63,38 +80,38 @@ jobs:
 
       # Changelog = commit subjects since the previous version tag.
       - name: Write changelog
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.ver.outputs.release == 'true'
         id: notes
         shell: bash
         run: |
-          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
-          range=${prev:+$prev..}$GITHUB_REF_NAME
+          prev=$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)
+          range=${prev:+$prev..}HEAD
           git log --no-merges --pretty='- %s' "$range" > notes.md
           [ -s notes.md ] || echo "- No changes listed" > notes.md
           {
-            echo "version=${GITHUB_REF_NAME#v}"
             echo "changelog<<EOF_NOTES"
             cat notes.md
             echo "EOF_NOTES"
           } >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: steps.ver.outputs.release == 'true'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" BlipLimitFix-Enhanced.zip --title "$GITHUB_REF_NAME" --notes-file notes.md
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: gh release create "$TAG" BlipLimitFix-Enhanced.zip --target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md
 
       # Skipped until the NEXUSMODS_API_KEY secret exists.
       - name: Upload to Nexus Mods
-        if: startsWith(github.ref, 'refs/tags/v') && env.NEXUS_KEY != ''
+        if: steps.ver.outputs.release == 'true' && env.NEXUS_KEY != ''
         uses: Nexus-Mods/upload-action@v1.0.0-beta.11
         with:
           api_key: ${{ secrets.NEXUSMODS_API_KEY }}
           mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
           file_id: ${{ vars.NEXUSMODS_FILE_ID }}
           filename: BlipLimitFix-Enhanced.zip
-          version: ${{ steps.notes.outputs.version }}
+          version: ${{ steps.ver.outputs.version }}
           changelog: ${{ steps.notes.outputs.changelog }}
           category: main
           archive_existing_version: true
