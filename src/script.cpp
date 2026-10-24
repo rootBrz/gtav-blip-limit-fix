@@ -179,7 +179,7 @@ ProgramArrayScan findProgramArray(HMODULE module) {
 
 ScriptResult patchController(const ScriptProgram* const* programs,
                              std::uint16_t limit, std::size_t& guardOffset,
-                             ScriptDiagnostics* diagnostics) {
+                             ScriptDiagnostics* diagnostics, std::uint32_t* previousCeiling) {
     if (limit < kMinLimit || limit > kMaxLimit) return ScriptResult::Invalid;
     std::array<const ScriptProgram*, kProgramSlots> slots;
     if (!memory::read(programs, slots.data(), sizeof(slots))) return ScriptResult::Transient;
@@ -234,6 +234,7 @@ ScriptResult patchController(const ScriptProgram* const* programs,
         if (written != ScriptResult::Patched) return written;
     }
     guardOffset = match.patchOffset;
+    if (previousCeiling) *previousCeiling = match.ceiling;
     return result;
 }
 } // namespace blip

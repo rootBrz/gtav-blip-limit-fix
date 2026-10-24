@@ -96,12 +96,13 @@ void run() {
     blip::ScriptDiagnostics diagnostics;
     for (;;) {
         std::size_t offset = 0;
-        const auto result = blip::patchController(programs, limit, offset, &diagnostics);
+        std::uint32_t previous = 0;
+        const auto result = blip::patchController(programs, limit, offset, &diagnostics, &previous);
         const bool pollAgain = blip::continueScriptPolling(result, transientFailures);
         switch (result) {
         case blip::ScriptResult::Patched:
-            log("PATCHED: semantic WAIT(2000) guard in blip_controller +0x%zX: ceiling 150 -> %u",
-                offset, static_cast<unsigned>(limit));
+            log("PATCHED: semantic WAIT(2000) guard in blip_controller +0x%zX: ceiling %u -> %u",
+                offset, static_cast<unsigned>(previous), static_cast<unsigned>(limit));
             log("Native pool unchanged; native counts remain accurate");
             return;
         case blip::ScriptResult::Unchanged:

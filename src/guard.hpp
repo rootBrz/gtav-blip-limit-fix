@@ -18,6 +18,7 @@ struct GuardMatch {
     std::size_t patchOffset = 0;
     std::size_t patchSize = 0;
     bool configured = false;
+    std::uint32_t ceiling = 0; // Threshold found in the script, before any rewrite.
     std::array<std::uint8_t, kMaxGuardBytes> expected{};
     std::array<std::uint8_t, kMaxGuardBytes> replacement{};
 };
@@ -149,7 +150,9 @@ struct LocalGuard {
         const auto patchStart = countPc + 4;
         auto pc = skipNops(patchStart);
         std::uint32_t threshold = 0;
-        if (!code.integer(pc, threshold, pc) || (threshold != 150 && threshold != limit)) return false;
+        // The vanilla value is not assumed: a game build or another mod may have set a
+        // different ceiling. The count/compare/WAIT(2000)/loop-back shape is what identifies the guard.
+        if (!code.integer(pc, threshold, pc) || threshold == 0 || threshold > kMaxLimit) return false;
         pc = skipNops(pc);
         if (pc >= last) return false;
         auto op = code.at(pc);
@@ -228,6 +231,7 @@ struct LocalGuard {
         out.patchOffset = patchStart;
         out.patchSize = branchPc - patchStart + (fused ? 1 : 0);
         out.configured = threshold == limit;
+        out.ceiling = threshold;
         for (std::size_t i = 0; i < out.windowSize; ++i) out.expected[i] = code.at(start + i);
         invalidNative = countIndex >= nativeCount || waitIndex >= nativeCount || waitIndex == countIndex;
         const std::size_t expressionSize = limit <= 255 ? 3 : 4;
@@ -313,6 +317,7 @@ GuardStatus findSemanticGuard(ByteAt byteAt, std::size_t length, std::uint32_t n
             checked.windowOffset != 0 || checked.windowSize != candidate.windowSize ||
             checked.patchOffset + candidate.windowOffset != candidate.patchOffset ||
             checked.patchSize != candidate.patchSize || checked.configured != candidate.configured ||
+            checked.ceiling != candidate.ceiling ||
             checked.replacement != candidate.replacement) {
             out = {};
             return GuardStatus::Changed;

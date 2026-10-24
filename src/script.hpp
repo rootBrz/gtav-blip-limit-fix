@@ -87,9 +87,11 @@ ProgramArrayScan findProgramArray(HMODULE module);
 
 // Reads fresh program/page snapshots each call; no cached pointer survives a yield.
 // guardOffset reports the predicate rewrite start, including any preserved padding.
-// diagnostics, when given, is filled on MissingGuard.
+// diagnostics, when given, is filled on MissingGuard. previousCeiling, when given,
+// receives the threshold the script held on Patched or Unchanged.
 ScriptResult patchController(const ScriptProgram* const* programs,
                              std::uint16_t limit, std::size_t& guardOffset,
-                             ScriptDiagnostics* diagnostics = nullptr);
+                             ScriptDiagnostics* diagnostics = nullptr,
+                             std::uint32_t* previousCeiling = nullptr);
 
 } // namespace blip

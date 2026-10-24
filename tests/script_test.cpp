@@ -115,7 +115,8 @@ void testPatchAndReload() {
     result = first.patch(offset);
     assert(result == blip::ScriptResult::Unchanged);
     assert(!blip::continueScriptPolling(result, failures));
-    assert(first.patch(offset, 1997) == blip::ScriptResult::MissingGuard); // Do not overwrite another configured patch.
+    // A different ceiling is not vanilla-only any more: the guard shape identifies it, so it is rewritten.
+    assert(first.patch(offset, 1997) == blip::ScriptResult::Patched);
 
     Script reloaded;
     reloaded.loop(31);

@@ -237,12 +237,35 @@ static void testNarrowAndConfigured() {
     assert(waits(paddedResult, padded.count, 255));
 }
 
+// Bytes copied from a real Enhanced 1.0.1158.16 blip_controller (BlipLimitFix.log, +0x3FE):
+// the ceiling there is 240, not 150.
+static void testObservedGameGuard() {
+    const Bytes code = {
+        0x2c, 0x01, 0x00, 0x0a, 0x25, 0xf0, 0x0c, 0x06, 0x56, 0x0a, 0x00,
+        0x43, 0xd0, 0x07, 0x2c, 0x04, 0x00, 0x2f, 0x55, 0xeb, 0xff, 0x2e, 0x00, 0x00};
+    GuardMatch found;
+    assert(match(code, found) == GuardStatus::Found);
+    assert(!found.configured && found.ceiling == 240);
+    assert(found.patchOffset == 4 && found.patchSize == 4);
+    assert(waits(code, 0, 240) && !waits(code, 0, 239));
+    const auto result = patched(code, found);
+    assert(!waits(result, 0, 1899) && waits(result, 0, 1900));
+    assert(match(result, found) == GuardStatus::Found && found.configured && found.ceiling == 1900);
+}
+
 static void testRefusals() {
     const auto good = fixture();
     GuardMatch found;
+    // Any plausible ceiling is accepted (a build or mod may differ from vanilla 150)...
     auto code = good.code;
-    code[good.constant + 1] = 151;
+    code[good.constant + 1] = 240;
+    assert(match(code, found) == GuardStatus::Found && !found.configured && found.ceiling == 240);
+    // ...but zero and values above the supported maximum are not a blip-count ceiling.
+    code = good.code;
+    code[good.constant + 1] = 0;
     assert(match(code, found) == GuardStatus::Missing);
+    const auto huge = fixture(0x43, Predicate::NotLess, 0, false, 2000);
+    assert(match(huge.code, found) == GuardStatus::Missing);
     code = good.code;
     code[good.waitConstant + 1] ^= 1;
     assert(match(code, found) == GuardStatus::Missing);
@@ -464,6 +487,7 @@ static const char* statusName(GuardStatus status) {
 int main(int argc, char** argv) {
     testForms();
     testNarrowAndConfigured();
+    testObservedGameGuard();
     testRefusals();
     testInstructionBoundaries();
     testIncomingEdges();
