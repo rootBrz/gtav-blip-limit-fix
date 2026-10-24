@@ -18,8 +18,12 @@ jobs:
   release:
     needs: unit
     runs-on: windows-latest
+    env:
+      NEXUS_KEY: ${{ secrets.NEXUSMODS_API_KEY }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: microsoft/setup-msbuild@v2
 
@@ -57,9 +61,41 @@ jobs:
           name: BlipLimitFix-Enhanced
           path: BlipLimitFix-Enhanced.zip
 
+      # Changelog = commit subjects since the previous version tag.
+      - name: Write changelog
+        if: startsWith(github.ref, 'refs/tags/v')
+        id: notes
+        shell: bash
+        run: |
+          prev=$(git describe --tags --abbrev=0 --match 'v*' "$GITHUB_REF_NAME^" 2>/dev/null || true)
+          range=${prev:+$prev..}$GITHUB_REF_NAME
+          git log --no-merges --pretty='- %s' "$range" > notes.md
+          [ -s notes.md ] || echo "- No changes listed" > notes.md
+          {
+            echo "version=${GITHUB_REF_NAME#v}"
+            echo "changelog<<EOF_NOTES"
+            cat notes.md
+            echo "EOF_NOTES"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" BlipLimitFix-Enhanced.zip --title "$GITHUB_REF_NAME" --generate-notes
+        run: gh release create "$GITHUB_REF_NAME" BlipLimitFix-Enhanced.zip --title "$GITHUB_REF_NAME" --notes-file notes.md
+
+      # Skipped until the NEXUSMODS_API_KEY secret exists.
+      - name: Upload to Nexus Mods
+        if: startsWith(github.ref, 'refs/tags/v') && env.NEXUS_KEY != ''
+        uses: Nexus-Mods/upload-action@v1.0.0-beta.11
+        with:
+          api_key: ${{ secrets.NEXUSMODS_API_KEY }}
+          mod_id: ${{ vars.NEXUSMODS_MOD_ID }}
+          file_id: ${{ vars.NEXUSMODS_FILE_ID }}
+          filename: BlipLimitFix-Enhanced.zip
+          version: ${{ steps.notes.outputs.version }}
+          changelog: ${{ steps.notes.outputs.changelog }}
+          category: main
+          archive_existing_version: true
+          update_mod_version: true
