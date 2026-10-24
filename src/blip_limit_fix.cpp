@@ -33,9 +33,37 @@ void log(const char* format, ...) {
 
 bool initialize();
 
+void logDiagnostics(const blip::ScriptDiagnostics& d) {
+    if (!d.collected) return;
+    log("DIAG: blip_controller length=%zu natives=%u WAIT-shaped(2c 04)=%zu count-shaped(2c 01)=%zu push2000+WAIT=%zu%s",
+        d.length, static_cast<unsigned>(d.nativeCount), d.waitNatives, d.countNatives,
+        d.candidates, d.faulted ? " (read fault; partial)" : "");
+    for (std::size_t i = 0; i < d.stored; ++i) {
+        const auto& c = d.found[i];
+        log("DIAG: candidate %zu: native at +0x%zX, bytes from +0x%zX:", i, c.nativeOffset, c.start);
+        for (std::size_t row = 0; row < c.size; row += 24) {
+            char text[24 * 3 + 1];
+            std::size_t n = 0;
+            for (std::size_t j = row; j < c.size && j < row + 24; ++j)
+                n += static_cast<std::size_t>(std::snprintf(text + n, sizeof(text) - n, "%02X ", c.bytes[j]));
+            log("DIAG:   +0x%zX: %s", c.start + row, text);
+        }
+    }
+}
+
+// MessageBoxW blocks until dismissed. Run on the script fiber it freezes the game,
+// and a fullscreen game can hide the box. Show it from its own thread.
+DWORD WINAPI showPatternFailure(LPVOID detail) {
+    MessageBoxW(nullptr, static_cast<const wchar_t*>(detail), L"BlipLimitFix: pattern search failed",
+                MB_OK | MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
+    return 0;
+}
+
 void patternFailure(const wchar_t* detail) {
-    MessageBoxW(nullptr, detail, L"BlipLimitFix: pattern search failed",
-                MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    // detail must be a string literal: the thread outlives this call.
+    if (const HANDLE thread = CreateThread(nullptr, 0, showPatternFailure,
+                                           const_cast<wchar_t*>(detail), 0, nullptr))
+        CloseHandle(thread);
 }
 
 void run() {
@@ -65,9 +93,10 @@ void run() {
     const auto programs = scan.programs;
     log("Located program array dynamically; waiting for blip_controller");
     unsigned transientFailures = 0;
+    blip::ScriptDiagnostics diagnostics;
     for (;;) {
         std::size_t offset = 0;
-        const auto result = blip::patchController(programs, limit, offset);
+        const auto result = blip::patchController(programs, limit, offset, &diagnostics);
         const bool pollAgain = blip::continueScriptPolling(result, transientFailures);
         switch (result) {
         case blip::ScriptResult::Patched:
@@ -93,6 +122,7 @@ void run() {
             break;
         case blip::ScriptResult::MissingGuard:
             log("REFUSED: active-blip-count WAIT(2000) guard not found");
+            logDiagnostics(diagnostics);
             patternFailure(L"The script pattern was not found. BlipLimitFix has stopped. See BlipLimitFix.log.");
             return;
         case blip::ScriptResult::UnsupportedGuard:

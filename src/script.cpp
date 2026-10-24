@@ -55,6 +55,39 @@ ScriptResult findGuard(const Pages& pages, std::size_t length,
     }
 }
 
+void collectDiagnostics(const Pages& pages, std::size_t length, std::uint32_t nativeCount,
+                        ScriptDiagnostics& diag) {
+    diag = {};
+    diag.length = length;
+    diag.nativeCount = nativeCount;
+    __try {
+        const auto at = [&](std::size_t i) { return *addressAt(pages, i); };
+        for (std::size_t p = 0; p + 1 < length; ++p) {
+            if (at(p) != 0x2c) continue;
+            const auto sig = at(p + 1);
+            if (sig == 0x01) ++diag.countNatives;
+            if (sig != 0x04) continue;
+            ++diag.waitNatives;
+            // 2000 = 0x07D0: little endian D0 07 within the five bytes before NATIVE.
+            bool push2000 = false;
+            for (std::size_t back = 2; back <= 5 && back <= p; ++back)
+                if (at(p - back) == 0xd0 && at(p - back + 1) == 0x07) push2000 = true;
+            if (!push2000) continue;
+            ++diag.candidates;
+            if (diag.stored == kDiagMaxCandidates) continue;
+            auto& c = diag.found[diag.stored++];
+            c.nativeOffset = p;
+            c.start = p > kDiagBefore ? p - kDiagBefore : 0;
+            const auto end = p + 4 + kDiagAfter < length ? p + 4 + kDiagAfter : length;
+            c.size = end - c.start;
+            for (std::size_t i = 0; i < c.size; ++i) c.bytes[i] = at(c.start + i);
+        }
+    } __except (memoryException(GetExceptionCode())) {
+        diag.faulted = true;
+    }
+    diag.collected = true;
+}
+
 ScriptResult writeGuard(const Pages& pages, const GuardMatch& match) {
     // Preflight rejection has made no writes and can be retried.
     for (std::size_t i = 0; i < match.patchSize; ++i)
@@ -145,7 +178,8 @@ ProgramArrayScan findProgramArray(HMODULE module) {
 }
 
 ScriptResult patchController(const ScriptProgram* const* programs,
-                             std::uint16_t limit, std::size_t& guardOffset) {
+                             std::uint16_t limit, std::size_t& guardOffset,
+                             ScriptDiagnostics* diagnostics) {
     if (limit < kMinLimit || limit > kMaxLimit) return ScriptResult::Invalid;
     std::array<const ScriptProgram*, kProgramSlots> slots;
     if (!memory::read(programs, slots.data(), sizeof(slots))) return ScriptResult::Transient;
@@ -183,6 +217,8 @@ ScriptResult patchController(const ScriptProgram* const* programs,
     }
     GuardMatch match;
     const auto result = findGuard(pages, program.length, program.nativeCount, limit, match);
+    if (result == ScriptResult::MissingGuard && diagnostics)
+        collectDiagnostics(pages, program.length, program.nativeCount, *diagnostics);
     if (result != ScriptResult::Patched && result != ScriptResult::Unchanged) return result;
     if (result == ScriptResult::Patched) {
         ScriptProgram current;
