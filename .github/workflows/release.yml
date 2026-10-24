@@ -1,0 +1,65 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make check
+
+  release:
+    needs: unit
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: microsoft/setup-msbuild@v2
+
+      # Only inc/main.h and lib/ScriptHookV.lib. The SDK may not be redistributed,
+      # so it lives in a repository secret, never in the tree.
+      - name: Restore ScriptHookV SDK
+        shell: bash
+        env:
+          SDK_B64: ${{ secrets.SCRIPTHOOKV_SDK_B64 }}
+        run: |
+          test -n "$SDK_B64" || { echo "SCRIPTHOOKV_SDK_B64 secret is not set"; exit 1; }
+          mkdir sdk
+          printf '%s' "$SDK_B64" | base64 -d | tar -xz -C sdk
+
+      - name: Build and run tests
+        shell: pwsh
+        run: |
+          $common = '/p:Platform=x64', '/p:PlatformToolset=v143', '/v:minimal'
+          msbuild BlipLimitFix.vcxproj /p:Configuration=ConfigTest @common
+          msbuild BlipLimitFix.vcxproj /p:Configuration=MemoryTest @common
+          .\build\config_test.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\build\memory_test.exe
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Build release
+        run: msbuild BlipLimitFix.vcxproj /p:Configuration=Release /p:Platform=x64 /p:PlatformToolset=v143 "/p:ScriptHookSdkDir=${{ github.workspace }}\sdk\" /v:minimal
+
+      - name: Package
+        shell: pwsh
+        run: Compress-Archive -Path dist\BlipLimitFix.asi, dist\BlipLimitFix.ini -DestinationPath BlipLimitFix-Enhanced.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: BlipLimitFix-Enhanced
+          path: BlipLimitFix-Enhanced.zip
+
+      - name: Create GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" BlipLimitFix-Enhanced.zip --title "$GITHUB_REF_NAME" --generate-notes
